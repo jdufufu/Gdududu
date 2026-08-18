@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web3 Authentication Demo</title>
+    <!-- Ethers.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #0b0e11; color: #eaecef; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; }
+        .card { background-color: #181a20; border: 1px solid #2b313a; border-radius: 16px; padding: 30px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+        h2 { margin-top: 0; color: #f0b90b; }
+        p { font-size: 14px; color: #848e9c; }
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; background-color: #f0b90b; color: #000; margin-top: 15px; }
+        .btn:hover { opacity: 0.9; }
+        .btn-logout { background-color: #f6465d; color: #fff; display: none; }
+        #status { margin-top: 15px; font-size: 13px; word-break: break-all; padding: 10px; border-radius: 6px; display: none; }
+        .success { background: rgba(14, 203, 129, 0.15); color: #0ecb81; display: block !important; }
+        .error { background: rgba(246, 70, 93, 0.15); color: #f6465d; display: block !important; }
+        .info { background: rgba(240, 185, 11, 0.15); color: #f0b90b; display: block !important; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Web3 Login</h2>
+    <p id="desc">Connect your Trust Wallet or MetaMask to sign in securely.</p>
+
+    <button id="loginBtn" class="btn" onclick="handleLogin()">Sign In with Wallet</button>
+    <button id="logoutBtn" class="btn btn-logout" onclick="handleLogout()">Log Out</button>
+
+    <div id="status"></div>
+</div>
+
+<script>
+    function setStatus(text, type) {
+        const el = document.getElementById("status");
+        el.className = type;
+        el.innerText = text;
+    }
+
+    // Check if session already exists
+    window.onload = () => {
+        const savedToken = localStorage.getItem("jwt_token");
+        const savedAddress = localStorage.getItem("user_address");
+        if (savedToken && savedAddress) {
+            showLoggedIn(savedAddress);
+        }
+    };
+
+    function showLoggedIn(address) {
+        document.getElementById("desc").innerText = `Authenticated as: ${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+        document.getElementById("loginBtn").style.display = "none";
+        document.getElementById("logoutBtn").style.display = "block";
+        setStatus("You are securely logged in!", "success");
+    }
+
+    async function handleLogin() {
+        if (!window.ethereum) {
+            setStatus("No Web3 wallet found. Please open inside Trust Wallet browser.", "error");
+            return;
+        }
+
+        try {
+            setStatus("Requesting wallet connection...", "info");
+            
+            // 1. Get user's wallet address
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const accounts = await provider.send("eth_requestAccounts", []);
+            const address = accounts[0];
+            const signer = await provider.getSigner();
+
+            // 2. Fetch challenge message from Netlify backend function
+            setStatus("Getting secure challenge...", "info");
+            const challengeRes = await fetch(`/.netlify/functions/get-challenge?address=${address}`);
+            const challengeData = await challengeRes.json();
+
+            if (!challengeRes.ok) {
+                throw new Error(challengeData.error || "Failed to get challenge");
+            }
+
+            // 3. Prompt Trust Wallet / MetaMask popup to sign message
+            setStatus("Please confirm signature in your wallet...", "info");
+            const signature = await signer.signMessage(challengeData.message);
+
+            // 4. Send signature to Netlify backend function for verification
+            setStatus("Verifying signature with server...", "info");
+            const verifyRes = await fetch('/.netlify/functions/verify-signature', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    address: address,
+                    signature: signature,
+                    message: challengeData.message,
+                    timestamp: challengeData.timestamp
+                })
+            });
+
+            const verifyData = await verifyRes.json();
+
+            if (!verifyRes.ok) {
+                throw new Error(verifyData.error || "Verification failed");
+            }
+
+            // 5. Store session in browser storage
+            localStorage.setItem("jwt_token", verifyData.token);
+            localStorage.setItem("user_address", verifyData.address);
+
+            showLoggedIn(verifyData.address);
+
+        } catch (error) {
+            console.error(error);
+            if (error.code === 4001 || error.code === "ACTION_REJECTED") {
+                setStatus("Signature rejected by user.", "error");
+            } else {
+                setStatus("Error: " + (error.message || error), "error");
+            }
+        }
+    }
+
+    function handleLogout() {
+        localStorage.removeItem("jwt_token");
+        localStorage.removeItem("user_address");
+        location.reload();
+    }
+</script>
+
+</body>
+</html>
